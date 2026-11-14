@@ -785,10 +785,10 @@ class Agent:
                     if eqr(name, f_cont) - 0.05 * extra >= 0.53:
                         return self._raise(state, target)
                     v3f = o.v3fold()
-                    if extra == 0 and o.v3_opp >= 3 and top < 0.5:
+                    if extra == 0 and o.v3_opp >= 5 and top < 0.28 and (suited or pair or name[0] == "A"):
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
-                        if ev > bb and self.rng.random() < 0.7:
+                        if ev > bb and self.rng.random() < 0.5:
                             return self._raise(state, target)
                 if e * real >= odds and to_call <= 0.12 * total:
                     return call
@@ -839,7 +839,7 @@ class Agent:
             elif lv_s >= 1.0:
                 f *= 0.6
             elif ranges[s][2][2]:
-                f *= 0.8
+                f *= 0.6 ** ranges[s][2][2]      # each call this hand makes a fold less likely
             frs.append(f)
         p_all_fold = 1.0
         for f in frs:
