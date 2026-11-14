@@ -300,7 +300,7 @@ class Agent:
     # rounds at about 1.6 ms per decision. BANK_SCALES = False assumes the worst case:
     # a 10 s bank for the whole table even in the 5,000-hand final.
     OVERHEAD = 0.0016
-    BANK_SCALES = True
+    BANK_SCALES = False
     BANK_SAFETY = 0.85
     FIXED_SIMS = None      # testing only: exact simulation count, ignores the clock
 
