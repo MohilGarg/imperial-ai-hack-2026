@@ -3,12 +3,21 @@ usage: arena.py HERO.py [rounds=40] [seed0=1000] [sims=60] [pool=real|house]
 Same seed -> same table composition, seat and cards for every hero, so runs are comparable."""
 import sys, os, random, importlib.util, time, math
 from multiprocessing import Pool
-V2 = os.path.dirname(os.path.abspath(__file__)); FIELD = os.path.join(V2, 'field'); KIT = '/home/claude/kit'
+V2 = os.path.dirname(os.path.abspath(__file__)); FIELD = os.path.join(V2, 'field2'); KIT = '/home/claude/kit'
 sys.path.insert(0, KIT); sys.path.insert(0, FIELD)
 from engine import FixedHandsTable
 from engine.players import LocalPlayer
-REAL = ['c_gamblerlove', 'c_chinese', 'c_sars', 'c_kojack', 'c_gamesgone', 'c_philaivey', 'c_matcha', 'c_claudebot',
-        'c_jumpstreet', 'c_marketmakers', 'c_attention', 'c_nd', 'fish_joca', 'fish_lehman', 'oldbot']
+import json
+POOL = json.load(open(os.path.join(FIELD, 'pool.json')))
+STRONG = ['c2_attention_is_all_in', 'c2_gherkers', 'c2_aast', 'c2_chinese_people_can_fly', 'c2_the_market_makers', 'v3b', 'v3b']
+def draw(rng, k):
+    names = list(POOL); w = [POOL[x] for x in names]; out = []
+    for _ in range(k):
+        t = rng.random() * sum(w); a = 0
+        for i, x in enumerate(names):
+            a += w[i]
+            if t <= a: out.append(x); names.pop(i); w.pop(i); break
+    return out
 _cache = {}
 def load(path):
     if path not in _cache:
@@ -17,11 +26,17 @@ def load(path):
     return _cache[path]
 def one(args):
     hero, seed, sims, pool, hands = args
-    rng = random.Random(seed); n = rng.choice([6, 7, 7, 8])
-    names = rng.sample(REAL, n - 1) if pool == 'real' else [pool] * (n - 1)
+    rng = random.Random(seed); n = rng.choice([6, 7, 7, 7, 8])
+    if pool == 'real': names = draw(rng, n - 1)
+    elif pool == 'strong':
+        n = 7; names = list(STRONG[:6]); rng.shuffle(names)
+    else: names = [pool] * (n - 1)
     seat = rng.randrange(n)
     H = load(hero)
     if hasattr(H, 'FIXED_SIMS'): H.FIXED_SIMS = sims
+    for kv in os.environ.get('HERO_ATTR', '').split(','):
+        if '=' in kv:
+            k, v = kv.split('='); setattr(H, k, float(v) if '.' in v else int(v))
     players = []
     k = 0
     for i in range(n):
