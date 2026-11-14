@@ -1,58 +1,84 @@
-# Imperial AI Hack 2026: [Project name]
+# Imperial AI Hack 2026: Poker Bot (Track 04, AI Poker Bots)
 
-> Built at the Imperial AI Hackathon, 14 to 15 November 2026, Huxley Building, Imperial College London.
+Built at the Imperial AI Hackathon, 14 to 15 November 2026, Huxley Building, Imperial College London.
 
-**Track:** [pick one: Autonomous Agents / Voice, Vision & Generative Media / AI for Science / AI Poker Bots / Reply Challenge: AI on Campus]
-**Bounties entered (max 2 from own track):** [e.g. Linkup, Tavily]
-**Extra prizes:** [Figma Best-Designed (link to Figma file) / Best Use of Adaption (model ID)] or none
-
-## Team
-
-| Name | Role |
-|------|------|
-| Mohil Garg | |
-| | |
+**Track:** AI Poker Bots (Optiver · Jump Trading · AlgoSoc). Decided by the live tournament.
+**Team:** Mohil Garg
 
 ## The problem
 
-Who it is for (a specific user, not "everyone") and what problem it solves.
+Seven or eight bots sit at a no-limit Texas Hold'em table and play 1,000 hands, with stacks reset to 100 big blinds every hand. Each decision must be made in under 10 ms (10 s total per round) using only the Python standard library. Opponents are unknown code written by other teams, so a fixed strategy gets exploited: the bot has to estimate its equity fast and adapt to each opponent within one round.
 
 ## What we built
 
-One paragraph on the product and what a full run looks like from start to finish.
+A single-file agent (`bot.py`, class `Agent`) that combines precomputed equity, time-budgeted Monte Carlo simulation and live opponent modelling.
 
-- **Automated:** ...
-- **Manual or mocked:** ...
-- **Reliability:** works in X out of Y runs.
+- **Preflop:** an embedded equity table for all 169 starting-hand classes against 1 to 7 opponents (computed offline with `tools/preflop_table.py`). It drives position-aware opening ranges, blind stealing when the players still to act are tight, and wider ranges against tables that fold too often postflop.
+- **Facing raises:** a Monte Carlo equity estimate against each raiser's estimated range (top X% of hands, where X is their observed raise frequency), then a direct EV comparison between fold, call, 3-bet and shove that includes each opponent's measured fold-to-raise rate.
+- **Postflop:** Monte Carlo equity against every live opponent's range, filtered by their preflop action and by postflop aggression. A player who bets is assumed to hold a made hand or a draw unless their history shows they bluff a lot. Bets are chosen by comparing EV(check) with EV(bet) at 50%, 75% and 100% of the pot, using each opponent's fold rate. Calls are pot-odds based, and raises are for value or semi-bluffs against players who fold too much.
+- **Opponent model (per seat, reset each round):** VPIP, PFR, postflop aggression frequency, fold-to-bet and fold-to-preflop-raise, all with Bayesian priors so the bot behaves sensibly from hand 1.
+- **Time management:** every simulation loop has a deadline that adapts to the remaining time bank (about 2 ms per decision, with a hard ceiling), so the bot never times out and keeps a safety margin on the single-core sandbox.
+
+## Results in local testing
+
+Big blinds won per 100 hands (bb/100) with the bot in one seat against 7 copies of each opponent type, over 4 rounds of 1,000 hands each:
+
+| Opponent field | bb/100 |
+|---|---|
+| Calling station | +3,100 |
+| Random | +640 |
+| Maniac (raises 70%, shoves often) | +430 to +540 |
+| Starter-kit bot | +220 |
+| Tight-aggressive house bot | +140 |
+| Nit (premium hands only) | +54 |
+
+Folding every hand loses about 19 bb/100. With the official tournament limits (separate processes, 10 ms per decision, 10 s bank), there were 0 errors and fewer than 1 timeout per 4,000 decisions.
 
 ## How it works
 
-Main components and why we chose them. Point to where each bounty tool is used in the code.
+```
+state ──► preflop? ──yes──► equity table + position + steal/fold-equity adjustments
+              │                      │ facing a raise
+              │                      ▼
+              │            range-weighted Monte Carlo ──► EV(fold / call / 3-bet / shove)
+              no
+              ▼
+   opponent ranges (preflop cut-off + aggression filter)
+              ▼
+   time-budgeted Monte Carlo equity ──► EV(check vs bet sizes) / pot odds / raise
+              ▲
+   on_hand_end ──► per-seat stats (VPIP, PFR, aggression, fold rates)
+```
 
-```
-[architecture sketch]
-```
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `bot.py` | The submitted bot (single file, standard library only) |
+| `tools/bot_template.py` | Bot source before the preflop table is embedded |
+| `tools/build.py` | Embeds the preflop equity table and writes `bot.py` |
+| `tools/preflop_table.py` | Offline Monte Carlo for the 169 x 7 preflop equity table |
+| `tools/fastsim.py`, `tools/h2h.py`, `tools/breakdown.py` | Fast in-process simulators and result breakdowns |
+| `tools/test_opponents/` | Extra opponent styles used for testing (maniac, nit, starter) |
+
+The tournament engine and `local_sim.py` come from the organisers' starter kit (not included here). Put the kit's `engine/` and `examples/` in a `kit/` folder to run the tools.
 
 ## APIs, models and datasets used
 
-| Name | What for | Where in code |
-|------|----------|---------------|
-| | | |
+| Name | What for |
+|---|---|
+| Python 3.12 standard library | Everything in `bot.py` (no external packages are allowed in the sandbox) |
+| AlgoSoc Pokerbots starter kit | Game engine, local simulator, example bots for testing |
+| Claude (Anthropic) | AI coding assistant during development (allowed by the track rules) |
 
-## What is new
-
-The closest existing product and how ours differs.
+No pretrained models or external datasets. The preflop table is generated by our own Monte Carlo script.
 
 ## Running it
 
 ```bash
-# setup
-# run
+# from the starter kit folder, with bot.py copied in
+python local_sim.py bot.py --rounds 10
 ```
-
-## Demo
-
-2-minute video: [Devpost link]
 
 ## Notes
 
