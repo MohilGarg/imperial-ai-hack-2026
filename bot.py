@@ -9,8 +9,14 @@ Equity-driven no-limit hold'em agent:
     and fold-to-bet, used both for range estimates and bluff frequency.
 Standard library only. Keeps well inside 10 ms per decision and 10 s per round.
 """
+import gc
 import random
 import time
+
+# Fewer, cheaper garbage collections: a collection pause mid-decision is the likeliest
+# cause of the rare real-server timeouts.
+gc.freeze()
+gc.set_threshold(20000, 50, 100)
 
 RANKS = "23456789TJQKA"
 SUITS = "cdhs"
@@ -287,8 +293,15 @@ class _Opp:
 
 
 class Agent:
-    BANK_TARGET = 5.5      # seconds of the 10 s bank we plan to use
-    MAX_THINK = 0.0025     # seconds per decision, hard ceiling
+    BANK_TARGET = 5.5      # legacy, unused by the bank model below
+    MAX_THINK = 0.0018     # seconds of our own compute per decision, hard ceiling
+    # Time-bank model. The server charges every decision for our compute PLUS its own
+    # overhead (sending the state, our process reading it), measured on Saturday's real
+    # rounds at about 1.6 ms per decision. BANK_SCALES = False assumes the worst case:
+    # a 10 s bank for the whole table even in the 5,000-hand final.
+    OVERHEAD = 0.0016
+    BANK_SCALES = True
+    BANK_SAFETY = 0.85
     FIXED_SIMS = None      # testing only: exact simulation count, ignores the clock
 
     def __init__(self):
@@ -299,6 +312,7 @@ class Agent:
         self.n = 8
         self.bb = 20
         self.hands_total = 1000
+        self.decisions = 0
 
     # ------------------------------------------------------------ callbacks
     def on_table_start(self, info):
@@ -321,6 +335,7 @@ class Agent:
         except Exception:
             out = None
         self.used += time.perf_counter() - t0
+        self.decisions += 1
         legal = state["legal_actions"]
         if not out:
             return {"action": "check"} if "check" in legal else {"action": "fold"}
@@ -404,17 +419,24 @@ class Agent:
             self.opps[s].vpip += 1
 
     # ------------------------------------------------------------ helpers
+    def _bank(self):
+        b = 10.0
+        if self.BANK_SCALES:
+            b *= max(1.0, self.hands_total / 1000.0)
+        return b * self.BANK_SAFETY
+
     def _budget(self, state):
-        left_bank = self.BANK_TARGET - self.used
-        hands_left = max(1, self.hands_total - state.get("hand_number", 1) + 1)
-        per = left_bank / float(hands_left)
-        return max(0.0003, min(self.MAX_THINK, per))
+        """Own compute allowed for this decision, after the server's per-decision overhead."""
+        hand = state.get("hand_number", 1)
+        hands_left = max(1, self.hands_total - hand + 1)
+        rate = (self.decisions + 12.5) / (hand - 1 + 10.0)      # decisions per hand, prior 1.25
+        spent = self.used + self.OVERHEAD * self.decisions
+        left = self._bank() - spent
+        per = left / (hands_left * rate) - self.OVERHEAD
+        return max(0.0, min(self.MAX_THINK, per))
 
     def _min_sims(self):
-        # Never let a long table (the 5,000-hand final) drain the time bank.
-        if self.used < self.BANK_TARGET:
-            return 60
-        return 24 if self.used < 7.5 else 6
+        return 60
 
     def _pre_fracs(self, state):
         """Top-fraction-of-hands range for every seat that acted voluntarily preflop."""
@@ -525,7 +547,7 @@ class Agent:
         perf = time.perf_counter
         fixed = self.FIXED_SIMS
         min_sims = min(min_sims, self._min_sims())
-        hard = deadline + (0.001 if min_sims >= 60 else 0.0003)
+        hard = deadline + 0.0004
         while True:
             if fixed:
                 if sims >= fixed:
@@ -610,6 +632,14 @@ class Agent:
                 win += 1.0 / ties
             sims += 1
         return win / sims if sims else 0.5
+
+    def _cheap_equity(self, hole, board, nopp):
+        """No-simulation estimate, used only when the time bank cannot afford Monte Carlo."""
+        lv = _made(hole, board)
+        base = (0.12, 0.38, 0.6, 0.74, 0.82, 0.88)[lv]
+        if lv < 2 and len(board) < 5 and _has_draw(hole, board):
+            base = max(base, 0.32)
+        return base ** (1.0 + 0.45 * (nopp - 1))
 
     def _cat_partial(self, h, board):
         # category of best hand using available cards (5 or 6 total)
@@ -780,7 +810,10 @@ class Agent:
             return self._passive(state)
         deadline = t0 + self._budget(state)
         ranges = self._ranges(state, opps)
-        eq = self._equity(hole, board, ranges, deadline)
+        if not self.FIXED_SIMS and deadline - t0 < 0.0003:
+            eq = self._cheap_equity(hole, board, len(opps))
+        else:
+            eq = self._equity(hole, board, ranges, deadline)
         nopp = len(opps)
         can_raise = "raise" in legal
         street = state["street"]
