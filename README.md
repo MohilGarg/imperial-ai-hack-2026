@@ -33,6 +33,8 @@ The stricter version did not do better on real tables. The field folds too often
 
 **Local simulation** against clones of the real bots (fitted to 129,000 real opponent hands; 96 rounds, standard error about 6): submitted bot +44, v2 +42, v4 +54. The simulation ranks v4 first and the real tables rank it last. We traced this to the clones paying off too much at showdown, so we use the simulation for bugs, timing and preflop changes, and real tables for style choices.
 
+**Learning from the top bots (Saturday 18:00).** Over 36,000 of our real hands, river bets with less than top pair (bluffs, ace-high, weak pairs; 199 bets) lost about 11bb each, roughly 6 bb/100 in total, and calling river bets with a weak pair lost about 29bb each. The two leading bots almost never bluff the river and make their money at showdown with strong hands. The submitted bot now checks the river without top pair or better and folds a weak pair to river bets bigger than 30% of the pot. In simulation this was +4.8 bb/100 (SE 2.0) over the previous version, and +3.3 (SE 3.7) on a table of strong bots.
+
 **Tried and not shipped:**
 - A fingerprint table that recognises known teams from their bet sizes and frequencies and loads their profile as a prior: +2.3 (SE 2.9) on one test pool and −2.1 (SE 2.6) on another. No detectable gain.
 - EV-based bet sizing from a "who would call" model: −1.1 (SE 2.7).

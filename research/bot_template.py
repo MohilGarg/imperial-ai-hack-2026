@@ -199,6 +199,31 @@ def _has_draw(hole, board):
     return False
 
 
+def _made(hole, board):
+    """Made-hand level using our hole cards: 0 nothing, 1 weak pair, 2 top pair/overpair,
+    3 two pair, 4 trips, 5 straight or better."""
+    t = evaluate(hole + board)
+    cat = t[0]
+    if cat >= 4:
+        return 5
+    hr = [c >> 2 for c in hole]
+    br = [c >> 2 for c in board]
+    bmax = max(br)
+    if cat == 3:
+        return 4 if t[1] in hr else 0
+    if cat == 2:
+        n_hole = (t[1] in hr) + (t[2] in hr)
+        if n_hole == 2 or (n_hole == 1 and br.count(t[1]) + br.count(t[2]) < 3):
+            return 3
+        return 2 if (t[1] in hr and t[1] >= bmax) or (t[2] in hr and t[2] >= bmax) else (1 if n_hole else 0)
+    if cat == 1:
+        p = t[1]
+        if p not in hr:
+            return 0
+        return 2 if p >= bmax else 1
+    return 0
+
+
 class _Opp:
     """Per-seat frequencies for one round, each with a prior so hand 1 is sane."""
 
@@ -767,8 +792,12 @@ class Agent:
             p_all_fold *= f
         callers = max(1.0, sum(1.0 - f for f in frs))
         avg_fr = sum(frs) / nopp
+        made = _made(hole, board) if river else 9
         if to_call == 0:
             if not can_raise:
+                return {"action": "check"}
+            # Real tables: river bets below top pair lost about 11bb each (199 bets).
+            if river and made < 2:
                 return {"action": "check"}
             # Checking realises only part of our equity; the rest is lost to
             # bets we fold to later. On the river it is exact.
@@ -803,6 +832,9 @@ class Agent:
                 and self.rng.random() < (frs[0] - 0.3)):
             cur = max(state["bets"])
             return self._raise(state, cur * 3)
+        # Real tables: calling river bets with a weak pair or less lost about 25bb each.
+        if river and made <= 1 and bet_frac > 0.3:
+            return {"action": "fold"}
         margin = (0.04 if river else 0.0) + (0.03 if bet_frac >= 0.75 else 0.0)
         if eq > po + margin:
             return {"action": "call"}
