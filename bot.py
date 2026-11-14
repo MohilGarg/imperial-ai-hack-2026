@@ -218,10 +218,21 @@ class _Opp:
         self.vjc_opp = 0          # facing a jam-sized raise cold
         self.vjc_call = 0
         self.bigr = 0             # jam-sized preflop raises made
+        self.lf_opp = 0           # limped, then faced a raise
+        self.lf_fold = 0
         self.agg = 0
         self.pas = 0
         self.faced = 0
         self.folded_to_bet = 0
+        self.pb_opp = 0           # postflop actions as the preflop raiser / of which bets and raises
+        self.pb_bet = 0
+        self.nb_opp = 0           # same, when not the preflop raiser
+        self.nb_bet = 0
+
+    def bet_freq(self, pfr):
+        if pfr:
+            return (self.pb_bet + 3.6) / (self.pb_opp + 6.0)
+        return (self.nb_bet + 1.8) / (self.nb_opp + 6.0)
 
     def vpip_rate(self):
         return (self.vpip + 2.5) / (self.hands + 10.0)
@@ -240,16 +251,19 @@ class _Opp:
         return max(0.0, 1.0 - self.three() - self.call_open())
 
     def v3fold(self):
-        return (self.v3_fold + 2.0) / (self.v3_opp + 5.0)
+        return (self.v3_fold + 2.75) / (self.v3_opp + 5.0)
 
     def v3raise(self):
-        return (self.v3_raise + 1.75) / (self.v3_opp + 5.0)
+        return (self.v3_raise + 1.1) / (self.v3_opp + 5.0)
 
     def jam_call_raised(self):
-        return (self.vjr_call + 1.5) / (self.vjr_opp + 5.0)
+        return (self.vjr_call + 3.3) / (self.vjr_opp + 6.0)
 
     def jam_call_cold(self):
         return (self.vjc_call + 0.6) / (self.vjc_opp + 10.0)
+
+    def limp_fold(self):
+        return (self.lf_fold + 2.0) / (self.lf_opp + 4.0)
 
     def big_rate(self):
         return (self.bigr + 0.25) / (self.hands + 12.0)
@@ -258,7 +272,7 @@ class _Opp:
         return (self.agg + 3.0) / (self.agg + self.pas + 10.0)
 
     def fold_rate(self):
-        return (self.folded_to_bet + 4.0) / (self.faced + 10.0)
+        return (self.folded_to_bet + 5.0) / (self.faced + 10.0)
 
 
 class Agent:
@@ -315,6 +329,8 @@ class Agent:
         raises = 0
         raised = set()
         vol = set()
+        limped = set()
+        lastpre = -1
         for h in history:
             s = h["seat"]
             a = h["action"]
@@ -343,6 +359,8 @@ class Agent:
                     b = 1 if d in (0, 1, 2, n - 1) else 0
                     o.un_opp[b] += 1
                     o.un_raise[b] += a == "raise"
+                    if a == "call":
+                        limped.add(s)
                 elif s in raised:
                     o.v3_opp += 1
                     o.v3_fold += a == "fold"
@@ -351,6 +369,10 @@ class Agent:
                     o.vo_opp += 1
                     o.vo_raise += a == "raise"
                     o.vo_call += a == "call"
+                    if s in limped:
+                        limped.discard(s)
+                        o.lf_opp += 1
+                        o.lf_fold += a == "fold"
                 if a in ("call", "raise"):
                     vol.add(s)
                 if a == "raise":
@@ -358,7 +380,14 @@ class Agent:
                         o.bigr += 1
                     raises += 1
                     raised.add(s)
+                    lastpre = s
             else:
+                if s == lastpre:
+                    o.pb_opp += 1
+                    o.pb_bet += a == "raise"
+                else:
+                    o.nb_opp += 1
+                    o.nb_bet += a == "raise"
                 if a == "raise":
                     o.agg += 1
                 elif a in ("call", "check"):
@@ -440,17 +469,59 @@ class Agent:
         return f
 
     def _ranges(self, state, opps):
-        """Preflop percentile cut-off and postflop filter strength per opponent."""
+        """Per opponent: preflop cut-off, postflop aggression level, bluffiness."""
         fr = self._pre_fracs(state)
-        hist = state["history"]
+        bb = state["big_blind"]
+        lvl = {}
+        ncalls = {}
+        pot = 0
+        bets = {}
+        st = "preflop"
+        cur = 0
+        lastpre = -1
+        for h in state["history"]:
+            if h["street"] != st:
+                st = h["street"]
+                bets = {}
+                cur = 0
+            a = h["action"]
+            s = h["seat"]
+            amt = h.get("amount", 0) or 0
+            if a in ("small_blind", "big_blind"):
+                pot += amt
+                bets[s] = amt
+                cur = max(cur, amt)
+            elif a == "call":
+                pot += amt
+                bets[s] = bets.get(s, 0) + amt
+                if st != "preflop":
+                    ncalls[s] = ncalls.get(s, 0) + 1
+            elif a == "raise":
+                added = amt - bets.get(s, 0)
+                if st != "preflop":
+                    pts = 1.0
+                    if cur > 0:
+                        pts += 1.0             # a raise over a bet
+                    if added > 0.8 * pot:
+                        pts += 0.5
+                    if added >= 30 * bb:
+                        pts += 0.5
+                    lvl[s] = lvl.get(s, 0.0) + pts
+                else:
+                    lastpre = s
+                pot += added
+                bets[s] = amt
+                cur = amt
         res = {}
         for s in opps:
             o = self.opps.get(s) or _Opp()
-            post_agg = 0
-            for h in hist:
-                if h["seat"] == s and h["street"] != "preflop" and h["action"] == "raise":
-                    post_agg += 1
-            res[s] = (max(0.0, min(1.0 - fr.get(s, 1.0), 0.985)), post_agg, o.agg_rate())
+            # How uninformative this player's bets are: 1.0 = bets every time, so a bet says nothing.
+            bf = o.bet_freq(s == lastpre)
+            m = max(0.05, min(1.0, (bf - 0.5) / 0.45))
+            wk = max(0.25, min(1.0, bf / 0.45))
+            f = o.fold_rate()
+            p_air = max(0.03, min(1.0, 1.0 - f / 0.55))
+            res[s] = (max(0.0, min(1.0 - fr.get(s, 1.0), 0.985)), lvl.get(s, 0.0), (m, wk, ncalls.get(s, 0), p_air))
         return res
 
     def _equity(self, hole, board, opp_ranges, deadline, min_sims=60):
@@ -461,6 +532,7 @@ class Agent:
         deck = [c for c in range(52) if c not in base_used]
         need = 5 - len(board)
         bcat = self._board_cat(board) if len(board) >= 3 else 0
+        bmax = max(c >> 2 for c in board) if board else 0
         specs = [(_range_start(cut) if cut > 0 else 0, post_agg, aggr)
                  for cut, post_agg, aggr in opp_ranges.values()]
         ncombo = len(COMBOS)
@@ -493,13 +565,41 @@ class Agent:
                         continue
                     if fallback is None:
                         fallback = (a, b)
-                    if post_agg and board:
+                    if (post_agg or aggr[2]) and board:
                         h = [a, b]
-                        improved = evaluate(h + board)[0] > bcat
-                        if not improved and not (need and _has_draw(h, board)):
-                            keep = min(1.0, aggr * (0.9 if post_agg == 1 else 0.5))
-                            if rand() > keep:
-                                continue
+                        t = evaluate(h + board)
+                        cat = t[0]
+                        if cat > bcat:
+                            if cat >= 3 or (cat == 2 and bcat == 0):
+                                sc = 3.0
+                            elif cat == 1:
+                                sc = 2.0 if t[1] >= bmax else 1.0
+                            else:
+                                sc = 1.0
+                        elif need and _has_draw(h, board):
+                            sc = 1.5
+                        else:
+                            sc = 0.0
+                        m, wk, ncl, p_air = aggr
+                        if post_agg == 0:
+                            # Only called so far: mostly pairs and draws, plus the hands that never fold.
+                            if not need:
+                                p_air = max(p_air, 0.15)
+                            if ncl >= 2:
+                                keep = 1.0 if sc >= 1.5 else (0.6 if sc >= 1.0 else p_air * p_air)
+                            else:
+                                keep = 1.0 if sc >= 1.0 else p_air
+                        elif post_agg < 2.0:
+                            keep = 1.0 if sc >= 2.0 else (max(m, 0.6) if sc >= 1.5 else (wk if sc >= 1.0 else m))
+                        elif post_agg < 3.0:
+                            keep = 1.0 if sc >= 2.0 else (max(m, 0.7) if sc >= 1.5 else (max(m, 0.35) if sc >= 1.0 else m * m))
+                        elif sc >= 3.0:
+                            keep = 1.0
+                        else:
+                            keep = (max(m, 0.45) if sc >= 2.0 else
+                                    (max(m, 0.3) if sc >= 1.5 else (max(m, 0.12) if sc >= 1.0 else m * m * m)))
+                        if keep < 1.0 and rand() > keep:
+                            continue
                     got = (a, b)
                     break
                 if got is None:
@@ -620,14 +720,33 @@ class Agent:
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
                     base += 0.12
-                elif any(o.vo_opp >= 12 and o.fold_open() < 0.55 for o in blinds):
-                    base -= 0.08
+                elif any(o.vo_opp >= 12 and o.three() > 0.12 for o in blinds):
+                    base -= 0.06
             if nl:
                 fishy = any((self.opps.get(x) or _Opp()).vpip_rate() > 0.5 for x in limpers)
                 base = min(base, 0.20) + (0.06 if fishy else 0.0)
             if top < base and can_raise:
                 size = (3.0 if d == 1 else 2.5) + nl
                 return self._raise(state, int(size * bb))
+            if nl and can_raise and top < 0.85:
+                # Limpers who fold to a raise: take the dead money with almost any hand.
+                lims = [self.opps.get(x) or _Opp() for x in limpers]
+                if all(o.lf_opp >= 4 for o in lims):
+                    p_all = 1.0
+                    for o in lims:
+                        p_all *= o.limp_fold()
+                    k = me
+                    while True:
+                        k = (k + 1) % n
+                        if k == (btn + 3) % n or k == me:
+                            break
+                        if not state["folded"][k] and k not in limpers:
+                            p_all *= (self.opps.get(k) or _Opp()).fold_open()
+                        if k == (btn + 2) % n:
+                            break
+                    size = int((3.5 + nl) * bb)
+                    if p_all * pot - (1.0 - p_all) * (size - mine) * 0.5 > 0.5 * bb:
+                        return self._raise(state, size)
             if to_call == 0:
                 return {"action": "check"}
             if nl >= 1 and to_call <= bb and top < 0.6 and (pair or suited or d == 1):
@@ -666,7 +785,7 @@ class Agent:
                     if eqr(name, f_cont) - 0.05 * extra >= 0.53:
                         return self._raise(state, target)
                     v3f = o.v3fold()
-                    if extra == 0 and o.v3_opp >= 6 and top < 0.5:
+                    if extra == 0 and o.v3_opp >= 3 and top < 0.5:
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb and self.rng.random() < 0.7:
@@ -711,7 +830,17 @@ class Agent:
         street = state["street"]
         river = street == "river"
 
-        frs = [(self.opps.get(s) or _Opp()).fold_rate() for s in opps]
+        frs = []
+        for s in opps:
+            f = (self.opps.get(s) or _Opp()).fold_rate()
+            lv_s = ranges[s][1]
+            if lv_s >= 2.0:
+                f *= 0.3
+            elif lv_s >= 1.0:
+                f *= 0.6
+            elif ranges[s][2][2]:
+                f *= 0.8
+            frs.append(f)
         p_all_fold = 1.0
         for f in frs:
             p_all_fold *= f
@@ -737,16 +866,23 @@ class Agent:
             return {"action": "check"}
 
         po = to_call / float(pot + to_call)
+        stack = state["stacks"][me]
+        bet_frac = to_call / float(max(1, pot - to_call))
+        lv = max(v[1] for v in ranges.values())
         raise_thr = 0.74 if nopp == 1 else max(0.5, 1.6 / (nopp + 1) + 0.1)
         if eq >= raise_thr and can_raise:
             cur = max(state["bets"])
-            return self._raise(state, cur * 3 + (pot - sum(state["bets"])))
+            target = cur * 3 + (pot - sum(state["bets"]))
+            # Only put a big part of the stack in as a raise with a very strong hand.
+            if target - state["bets"][me] < 0.5 * stack or eq >= 0.82:
+                return self._raise(state, target)
+            return {"action": "call"}
         # Semi-bluff raise against a single bettor who folds to raises a lot.
-        if (can_raise and nopp == 1 and not river and eq > 0.3 and frs[0] > 0.45
+        if (can_raise and nopp == 1 and not river and lv < 2.0 and eq > 0.3 and frs[0] > 0.45
                 and self.rng.random() < (frs[0] - 0.3)):
             cur = max(state["bets"])
             return self._raise(state, cur * 3)
-        margin = 0.04 if river else 0.0
+        margin = (0.04 if river else 0.0) + (0.03 if bet_frac >= 0.75 else 0.0)
         if eq > po + margin:
             return {"action": "call"}
         return {"action": "fold"}
