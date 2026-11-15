@@ -16,7 +16,7 @@ Six to eight bots play no-limit Texas Hold'em for 1,000 hands, with stacks reset
 - **Preflop, by table lookup.** Two embedded tables, both computed offline by our own Monte Carlo scripts: equity of each of the 169 starting-hand classes against 1 to 7 random hands, and against an opponent holding the top X% of hands (12 range widths). Every opponent's range is narrowed by what they did (open, 3-bet, 4-bet, call, jam) using that seat's measured frequency for that action, and the bot folds, calls, 3-bets or stacks off by comparing equity against that range with the pot odds. No simulation is needed preflop, which saves most of the time bank.
 - **Postflop, by time-budgeted Monte Carlo.** Opponent hands are sampled from their preflop range and filtered by how much strength they have shown: bet size, raises over bets and repeated barrels each demand a stronger hand, scaled by how often that opponent bets. Bets are chosen by comparing EV(check) with EV(bet) at three sizes using each opponent's fold frequency; calls use pot odds with a margin for large bets.
 - **Opponent model per seat, per round.** Open frequency by position, 3-bet, fold to 3-bet, 4-bet, call-a-jam, limp-fold, bet frequency as raiser and as caller, and fold to bet. Every statistic starts from a prior set from the real field averages.
-- **Time management.** About 1 s of thinking per 1,000 hands, with a throttle that cuts simulation counts if the bank runs low (needed for the 5,000-hand final).
+- **Time management.** The organisers confirmed the final is five 1,000-hand blocks, each with a fresh `Agent()` and a fresh 10 s bank, so the bot budgets over its own 1,000-hand lifetime: a 1.8 ms compute ceiling per decision plus a measured 1.6 ms server overhead, a 15% safety margin, `gc.freeze()`, and a cheap equity fallback if the bank runs short. Tested over full 1,000-hand blocks: about 2.4 s of 10 s used, slowest decision about 3 ms, zero errors.
 
 ## Results, with their noise
 
@@ -40,11 +40,30 @@ The stricter version did not do better on real tables. The field folds too often
 - EV-based bet sizing from a "who would call" model: −1.1 (SE 2.7).
 - Wider opening ranges: −2.2 (SE 4.2).
 
+**Sunday bucket rounds (Table A, 7 bots, top 2 reach the final).** We changed versions often, chasing a large gap, and the results show what worked and what did not:
+
+| Live version | Rounds | Chips | What it changed |
+|---|---|---|---|
+| v12 (Saturday's v7 strategy, new timing) | r1, r10-12 | about -2,300 | Lifetime time budget only |
+| v13 | r2-9 | -18,685 | Pot-sized betting from a size-dependent fold model. Opponents folded more, but one-pair hands ended up all-in: stacks lost per round rose from 2.8 to 4.9 |
+| v15 | r13-16 | +7,465 | v12 plus two folds: weak pair to big turn bets, top pair to passive players' big late bets |
+| v17, v18 | r17-19 | -12,145 | Re-raise openers who fold to re-raises often (one bot folded 80% of the time over 269 spots) |
+| v20 | r20-22 | +6,538 | v18 plus wider late-position opens and in-position defends |
+| v21 | r23-27 | -5,683 | v20 with tighter big-blind defence and blind re-raises cut |
+| v22 | r28 onwards | | Maximum-variance push once qualifying was out of reach: very wide ranges and pot-sized betting |
+
+Lessons from Sunday's 30,000 hands:
+- **Luck was not the problem.** For our all-in pots, the equity when the money went in predicted -44,946 and we got -42,265.
+- **Big pots need big hands.** Our deficit came from one-pair hands in big pots (2 wins in 27 big one-pair showdowns). Rules that fold one pair to strong late bets were among the few clearly positive changes.
+- **Re-raising frequent folders works.** Our re-raises were the most profitable preflop action (+3.7 to +7.6 bb each over 313).
+- **The leaders were different.** Astra La Vista won with constant aggression (raises 27% of hands, bets 78% of the time when checked to). Attention Is All In won with selective, smaller bets and won 48% of its showdowns against our 33%.
+- **What hurt us was changing strategy faster than the data could support.** The simulator rated each change well, but with one round swinging by about 55 bb/100, a few live rounds could not confirm any of them.
+
 ## Repository layout
 
 | Path | What it is |
 |---|---|
-| `bot.py` | The submitted bot |
+| `bot.py` | The live bot at upload close (v22) |
 | `research/bot_template.py`, `research/build.py` | Bot source and the script that embeds the two tables |
 | `research/preflop_table.py`, `research/gen_eqr.py` | Offline Monte Carlo for the equity tables |
 | `research/arena.py`, `research/paired.py` | Paired-seed test harness and A/B comparison |

@@ -9,8 +9,15 @@ Equity-driven no-limit hold'em agent:
     and fold-to-bet, used both for range estimates and bluff frequency.
 Standard library only. Keeps well inside 10 ms per decision and 10 s per round.
 """
+import gc
+import math
 import random
 import time
+
+# Fewer, cheaper garbage collections: a collection pause mid-decision is the likeliest
+# cause of the rare real-server timeouts.
+gc.freeze()
+gc.set_threshold(20000, 50, 100)
 
 RANKS = "23456789TJQKA"
 SUITS = "cdhs"
@@ -199,6 +206,20 @@ def _has_draw(hole, board):
     return False
 
 
+# Real tables (16,000 hands, ~9,000 field bets): heads-up fold-to-bet rises with size,
+# e.g. flop 40% at 1/2 pot, 48% at 3/4, 56% at pot; turn 41/48/61; river 54/62/72.
+# A logistic shift of 1.4 per pot around the field's typical bet (0.68 pot) fits all streets.
+FOLD_BETA = 1.4
+FOLD_S0 = 0.68
+
+
+def _fold_at(fr, frac):
+    """Fold chance against a bet of `frac` pot, given a size-blind fold rate `fr`."""
+    fr = min(0.97, max(0.03, fr))
+    z = math.log(fr / (1.0 - fr)) + FOLD_BETA * (frac - FOLD_S0)
+    return 1.0 / (1.0 + math.exp(-z))
+
+
 def _made(hole, board):
     """Made-hand level using our hole cards: 0 nothing, 1 weak pair, 2 top pair/overpair,
     3 two pair, 4 trips, 5 straight or better."""
@@ -287,8 +308,16 @@ class _Opp:
 
 
 class Agent:
-    BANK_TARGET = 5.5      # seconds of the 10 s bank we plan to use
-    MAX_THINK = 0.0025     # seconds per decision, hard ceiling
+    BANK_TARGET = 5.5      # legacy, unused by the bank model below
+    MAX_THINK = 0.0018     # seconds of our own compute per decision, hard ceiling
+    # Time-bank model. The server charges every decision for our compute PLUS its own
+    # overhead (sending the state, our process reading it), measured on Saturday's real
+    # rounds at about 1.6 ms per decision. Organisers confirmed every Agent() lives at most
+    # 1,000 hands with its own 10 s bank (the 5,000-hand final is 5 blocks of 1,000 hands
+    # with a fresh Agent and a fresh bank each), so budget over this Agent's own lifetime.
+    OVERHEAD = 0.0016
+    LIFETIME = 1000
+    BANK_SAFETY = 0.85
     FIXED_SIMS = None      # testing only: exact simulation count, ignores the clock
 
     def __init__(self):
@@ -299,6 +328,8 @@ class Agent:
         self.n = 8
         self.bb = 20
         self.hands_total = 1000
+        self.decisions = 0
+        self.hands_played = 0
 
     # ------------------------------------------------------------ callbacks
     def on_table_start(self, info):
@@ -309,6 +340,7 @@ class Agent:
         self.opps = {i: _Opp() for i in range(self.n)}
 
     def on_hand_end(self, summary):
+        self.hands_played += 1
         try:
             self._learn(summary.get("history", []))
         except Exception:
@@ -321,6 +353,7 @@ class Agent:
         except Exception:
             out = None
         self.used += time.perf_counter() - t0
+        self.decisions += 1
         legal = state["legal_actions"]
         if not out:
             return {"action": "check"} if "check" in legal else {"action": "fold"}
@@ -404,17 +437,21 @@ class Agent:
             self.opps[s].vpip += 1
 
     # ------------------------------------------------------------ helpers
+    def _bank(self):
+        return 10.0 * self.BANK_SAFETY
+
     def _budget(self, state):
-        left_bank = self.BANK_TARGET - self.used
-        hands_left = max(1, self.hands_total - state.get("hand_number", 1) + 1)
-        per = left_bank / float(hands_left)
-        return max(0.0003, min(self.MAX_THINK, per))
+        """Own compute allowed for this decision, after the server's per-decision overhead."""
+        life = min(self.LIFETIME, self.hands_total or self.LIFETIME)
+        hands_left = max(1, life - self.hands_played)
+        rate = (self.decisions + 12.5) / (self.hands_played + 10.0)   # decisions per hand, prior 1.25
+        spent = self.used + self.OVERHEAD * self.decisions
+        left = self._bank() - spent
+        per = left / (hands_left * rate) - self.OVERHEAD
+        return max(0.0, min(self.MAX_THINK, per))
 
     def _min_sims(self):
-        # Never let a long table (the 5,000-hand final) drain the time bank.
-        if self.used < self.BANK_TARGET:
-            return 60
-        return 24 if self.used < 7.5 else 6
+        return 60
 
     def _pre_fracs(self, state):
         """Top-fraction-of-hands range for every seat that acted voluntarily preflop."""
@@ -525,7 +562,7 @@ class Agent:
         perf = time.perf_counter
         fixed = self.FIXED_SIMS
         min_sims = min(min_sims, self._min_sims())
-        hard = deadline + (0.001 if min_sims >= 60 else 0.0003)
+        hard = deadline + 0.0004
         while True:
             if fixed:
                 if sims >= fixed:
@@ -611,6 +648,14 @@ class Agent:
             sims += 1
         return win / sims if sims else 0.5
 
+    def _cheap_equity(self, hole, board, nopp):
+        """No-simulation estimate, used only when the time bank cannot afford Monte Carlo."""
+        lv = _made(hole, board)
+        base = (0.12, 0.38, 0.6, 0.74, 0.82, 0.88)[lv]
+        if lv < 2 and len(board) < 5 and _has_draw(hole, board):
+            base = max(base, 0.32)
+        return base ** (1.0 + 0.45 * (nopp - 1))
+
     def _cat_partial(self, h, board):
         # category of best hand using available cards (5 or 6 total)
         return evaluate(h + board)[0]
@@ -677,20 +722,21 @@ class Agent:
             limpers = set(h["seat"] for h in hist)
             limpers.discard(me)
             nl = len(limpers)
+            # v22: maximum-variance push (top 2 only qualify, ~9 rounds left).
             if d == 0:
-                base = 0.40
+                base = 0.75
             elif d == 1:
-                base = 0.36
+                base = 0.60
             elif d == 2:
                 base = 0.10
             elif d == n - 1:
-                base = 0.27
+                base = 0.55
             elif d == n - 2 and n >= 6:
-                base = 0.20
+                base = 0.40
             elif d == 3:
-                base = 0.13 if n >= 7 else 0.16
+                base = 0.28 if n >= 7 else 0.32
             else:
-                base = 0.16
+                base = 0.32
             if nl == 0 and d in (0, 1, n - 1):
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
@@ -730,7 +776,9 @@ class Agent:
         idx_agg = (agg - btn - 1) % n
         ip = idx_me > idx_agg
         nb = sum(1 for s in range(n) if s != me and not state["folded"][s] and state["bets"][s] < cur)
-        real = (0.84 if ip else 0.68) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
+        # v19/v20: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
+        # v21: big-blind/out-of-position calls lost ~2.8bb vs folding in rounds 18-21 -> back to v15 OOP level.
+        real = (1.0 if ip else 0.80) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
 
         if not i_raised:
             if len(raises) == 1:
@@ -741,11 +789,30 @@ class Agent:
                     if eqr(name, f_cont) - 0.05 * extra >= 0.53:
                         return self._raise(state, target)
                     v3f = o.v3fold()
+                    # v17: Sunday Table A, Astra folds 80% to 3-bets (n=269), test 74%. Against
+                    # openers measured at >= 70% over >= 15 spots, 3-bet the top 45% every time.
+                    if extra == 0 and o.v3_opp >= 6 and v3f >= 0.50 and top < 0.60:
+                        add = min(target, state["max_raise_to"]) - mine
+                        ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
+                        if ev > bb:
+                            return self._raise(state, target)
+                    # v18: second tier. Sunday 3-bets from the blinds vs Attention made +2.8 to +5.6bb each.
+                    # v21: tier-2 3-bets only in position (blind 3-bets went negative in rounds 18-21).
+                    if extra == 0 and d not in (1, 2) and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
+                        add = min(target, state["max_raise_to"]) - mine
+                        ev = (v3f * pot - (1.0 - v3f) * add * 0.6) * (0.9 ** nb)
+                        if ev > bb:
+                            return self._raise(state, target)
                     if extra == 0 and o.v3_opp >= 5 and top < 0.28 and (suited or pair or name[0] == "A"):
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb and self.rng.random() < 0.7:
                             return self._raise(state, target)
+                # v18 (Sunday, v12+ rounds): flat calls lost from the small blind vs CO/early opens
+                # (-2 to -3bb, folding costs 0.5) and from early seats vs early opens (-7bb, n=30).
+                d_agg = (agg - btn) % n
+                if (d == 1 and d_agg != 0) or (3 <= d <= n - 2 and d_agg >= 3):
+                    return fold
                 if e * real >= odds and to_call <= 0.12 * total:
                     return call
                 return fold
@@ -780,7 +847,10 @@ class Agent:
             return self._passive(state)
         deadline = t0 + self._budget(state)
         ranges = self._ranges(state, opps)
-        eq = self._equity(hole, board, ranges, deadline)
+        if not self.FIXED_SIMS and deadline - t0 < 0.0003:
+            eq = self._cheap_equity(hole, board, len(opps))
+        else:
+            eq = self._equity(hole, board, ranges, deadline)
         nopp = len(opps)
         can_raise = "raise" in legal
         street = state["street"]
@@ -792,7 +862,7 @@ class Agent:
             p_all_fold *= f
         callers = max(1.0, sum(1.0 - f for f in frs))
         avg_fr = sum(frs) / nopp
-        made = _made(hole, board) if river else 9
+        made = _made(hole, board) if (river or street == "turn") else 9
         if to_call == 0:
             if not can_raise:
                 return {"action": "check"}
@@ -805,10 +875,15 @@ class Agent:
             ev_check = eq * pot * real
             best, best_size = ev_check, 0
             # Callers are stronger than the field when many hands fold.
-            eq_c = max(0.0, eq - 0.12 * avg_fr) if eq < 0.7 else eq
             for frac in (0.5, 0.75, 1.0):
                 b = pot * frac
-                ev = p_all_fold * pot + (1.0 - p_all_fold) * (eq_c * (pot + b * (1.0 + callers)) - b)
+                fs = [_fold_at(f, frac) for f in frs]
+                paf = 1.0
+                for f in fs:
+                    paf *= f
+                cl = max(1.0, sum(1.0 - f for f in fs))
+                eq_c = max(0.0, eq - 0.12 * sum(fs) / nopp) if eq < 0.7 else eq
+                ev = paf * pot + (1.0 - paf) * (eq_c * (pot + b * (1.0 + cl)) - b)
                 if ev > best + 0.02 * pot:
                     best, best_size = ev, b
             if best_size:
@@ -835,6 +910,15 @@ class Agent:
         # Real tables: calling river bets with a weak pair or less lost about 25bb each.
         if river and made <= 1 and bet_frac > 0.3:
             return {"action": "fold"}
+        # v15 (Sat+Sun real hands): on the turn, calling big bets or raises with a weak pair or
+        # less lost ~5-13bb per call (n~56); top pair calling a passive player's big turn/river
+        # bet lost ~23bb per call (n=20). Passive players' big late bets are strong.
+        if street == "turn" and made <= 1 and bet_frac >= 0.35:
+            return {"action": "fold"}
+        if made == 2 and bet_frac >= 0.35 and nopp == 1:
+            bettor = max(opps, key=lambda s: state["bets"][s])
+            if (self.opps.get(bettor) or _Opp()).agg_rate() < 0.4:
+                return {"action": "fold"}
         margin = (0.04 if river else 0.0) + (0.03 if bet_frac >= 0.75 else 0.0)
         if eq > po + margin:
             return {"action": "call"}
