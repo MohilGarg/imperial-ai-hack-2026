@@ -707,20 +707,21 @@ class Agent:
             limpers = set(h["seat"] for h in hist)
             limpers.discard(me)
             nl = len(limpers)
+            # v19 (high-variance push, only top 2 qualify): much wider opens.
             if d == 0:
-                base = 0.40
+                base = 0.55
             elif d == 1:
-                base = 0.36
+                base = 0.45
             elif d == 2:
                 base = 0.10
             elif d == n - 1:
-                base = 0.27
+                base = 0.38
             elif d == n - 2 and n >= 6:
-                base = 0.20
+                base = 0.27
             elif d == 3:
-                base = 0.13 if n >= 7 else 0.16
+                base = 0.18 if n >= 7 else 0.21
             else:
-                base = 0.16
+                base = 0.21
             if nl == 0 and d in (0, 1, n - 1):
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
@@ -760,7 +761,8 @@ class Agent:
         idx_agg = (agg - btn - 1) % n
         ip = idx_me > idx_agg
         nb = sum(1 for s in range(n) if s != me and not state["folded"][s] and state["bets"][s] < cur)
-        real = (0.84 if ip else 0.68) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
+        # v19: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
+        real = (0.92 if ip else 0.72) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
 
         if not i_raised:
             if len(raises) == 1:
@@ -778,22 +780,11 @@ class Agent:
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb:
                             return self._raise(state, target)
-                    # v18: second tier. Sunday 3-bets from the blinds vs Attention made +2.8 to +5.6bb each.
-                    if extra == 0 and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
-                        add = min(target, state["max_raise_to"]) - mine
-                        ev = (v3f * pot - (1.0 - v3f) * add * 0.6) * (0.9 ** nb)
-                        if ev > bb:
-                            return self._raise(state, target)
                     if extra == 0 and o.v3_opp >= 5 and top < 0.28 and (suited or pair or name[0] == "A"):
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb and self.rng.random() < 0.7:
                             return self._raise(state, target)
-                # v18 (Sunday, v12+ rounds): flat calls lost from the small blind vs CO/early opens
-                # (-2 to -3bb, folding costs 0.5) and from early seats vs early opens (-7bb, n=30).
-                d_agg = (agg - btn) % n
-                if (d == 1 and d_agg != 0) or (3 <= d <= n - 2 and d_agg >= 3):
-                    return fold
                 if e * real >= odds and to_call <= 0.12 * total:
                     return call
                 return fold
