@@ -297,10 +297,11 @@ class Agent:
     MAX_THINK = 0.0018     # seconds of our own compute per decision, hard ceiling
     # Time-bank model. The server charges every decision for our compute PLUS its own
     # overhead (sending the state, our process reading it), measured on Saturday's real
-    # rounds at about 1.6 ms per decision. BANK_SCALES = False assumes the worst case:
-    # a 10 s bank for the whole table even in the 5,000-hand final.
+    # rounds at about 1.6 ms per decision. Organisers confirmed every Agent() lives at most
+    # 1,000 hands with its own 10 s bank (the 5,000-hand final is 5 blocks of 1,000 hands
+    # with a fresh Agent and a fresh bank each), so budget over this Agent's own lifetime.
     OVERHEAD = 0.0016
-    BANK_SCALES = False
+    LIFETIME = 1000
     BANK_SAFETY = 0.85
     FIXED_SIMS = None      # testing only: exact simulation count, ignores the clock
 
@@ -313,6 +314,7 @@ class Agent:
         self.bb = 20
         self.hands_total = 1000
         self.decisions = 0
+        self.hands_played = 0
 
     # ------------------------------------------------------------ callbacks
     def on_table_start(self, info):
@@ -323,6 +325,7 @@ class Agent:
         self.opps = {i: _Opp() for i in range(self.n)}
 
     def on_hand_end(self, summary):
+        self.hands_played += 1
         try:
             self._learn(summary.get("history", []))
         except Exception:
@@ -420,16 +423,13 @@ class Agent:
 
     # ------------------------------------------------------------ helpers
     def _bank(self):
-        b = 10.0
-        if self.BANK_SCALES:
-            b *= max(1.0, self.hands_total / 1000.0)
-        return b * self.BANK_SAFETY
+        return 10.0 * self.BANK_SAFETY
 
     def _budget(self, state):
         """Own compute allowed for this decision, after the server's per-decision overhead."""
-        hand = state.get("hand_number", 1)
-        hands_left = max(1, self.hands_total - hand + 1)
-        rate = (self.decisions + 12.5) / (hand - 1 + 10.0)      # decisions per hand, prior 1.25
+        life = min(self.LIFETIME, self.hands_total or self.LIFETIME)
+        hands_left = max(1, life - self.hands_played)
+        rate = (self.decisions + 12.5) / (self.hands_played + 10.0)   # decisions per hand, prior 1.25
         spent = self.used + self.OVERHEAD * self.decisions
         left = self._bank() - spent
         per = left / (hands_left * rate) - self.OVERHEAD
