@@ -10,6 +10,7 @@ Equity-driven no-limit hold'em agent:
 Standard library only. Keeps well inside 10 ms per decision and 10 s per round.
 """
 import gc
+import math
 import random
 import time
 
@@ -203,6 +204,20 @@ def _has_draw(hole, board):
         if w == 15 and (hm >> lo) & 15:
             return True
     return False
+
+
+# Real tables (16,000 hands, ~9,000 field bets): heads-up fold-to-bet rises with size,
+# e.g. flop 40% at 1/2 pot, 48% at 3/4, 56% at pot; turn 41/48/61; river 54/62/72.
+# A logistic shift of 1.4 per pot around the field's typical bet (0.68 pot) fits all streets.
+FOLD_BETA = 1.4
+FOLD_S0 = 0.68
+
+
+def _fold_at(fr, frac):
+    """Fold chance against a bet of `frac` pot, given a size-blind fold rate `fr`."""
+    fr = min(0.97, max(0.03, fr))
+    z = math.log(fr / (1.0 - fr)) + FOLD_BETA * (frac - FOLD_S0)
+    return 1.0 / (1.0 + math.exp(-z))
 
 
 def _made(hole, board):
@@ -838,10 +853,15 @@ class Agent:
             ev_check = eq * pot * real
             best, best_size = ev_check, 0
             # Callers are stronger than the field when many hands fold.
-            eq_c = max(0.0, eq - 0.12 * avg_fr) if eq < 0.7 else eq
             for frac in (0.5, 0.75, 1.0):
                 b = pot * frac
-                ev = p_all_fold * pot + (1.0 - p_all_fold) * (eq_c * (pot + b * (1.0 + callers)) - b)
+                fs = [_fold_at(f, frac) for f in frs]
+                paf = 1.0
+                for f in fs:
+                    paf *= f
+                cl = max(1.0, sum(1.0 - f for f in fs))
+                eq_c = max(0.0, eq - 0.12 * sum(fs) / nopp) if eq < 0.7 else eq
+                ev = paf * pot + (1.0 - paf) * (eq_c * (pot + b * (1.0 + cl)) - b)
                 if ev > best + 0.02 * pot:
                     best, best_size = ev, b
             if best_size:
