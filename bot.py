@@ -761,7 +761,7 @@ class Agent:
         idx_agg = (agg - btn - 1) % n
         ip = idx_me > idx_agg
         nb = sum(1 for s in range(n) if s != me and not state["folded"][s] and state["bets"][s] < cur)
-        # v19: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
+        # v19/v20: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
         real = (0.92 if ip else 0.72) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
 
         if not i_raised:
@@ -780,11 +780,22 @@ class Agent:
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb:
                             return self._raise(state, target)
+                    # v18: second tier. Sunday 3-bets from the blinds vs Attention made +2.8 to +5.6bb each.
+                    if extra == 0 and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
+                        add = min(target, state["max_raise_to"]) - mine
+                        ev = (v3f * pot - (1.0 - v3f) * add * 0.6) * (0.9 ** nb)
+                        if ev > bb:
+                            return self._raise(state, target)
                     if extra == 0 and o.v3_opp >= 5 and top < 0.28 and (suited or pair or name[0] == "A"):
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb and self.rng.random() < 0.7:
                             return self._raise(state, target)
+                # v18 (Sunday, v12+ rounds): flat calls lost from the small blind vs CO/early opens
+                # (-2 to -3bb, folding costs 0.5) and from early seats vs early opens (-7bb, n=30).
+                d_agg = (agg - btn) % n
+                if (d == 1 and d_agg != 0) or (3 <= d <= n - 2 and d_agg >= 3):
+                    return fold
                 if e * real >= odds and to_call <= 0.12 * total:
                     return call
                 return fold
