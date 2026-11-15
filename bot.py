@@ -10,7 +10,6 @@ Equity-driven no-limit hold'em agent:
 Standard library only. Keeps well inside 10 ms per decision and 10 s per round.
 """
 import gc
-import math
 import random
 import time
 
@@ -204,20 +203,6 @@ def _has_draw(hole, board):
         if w == 15 and (hm >> lo) & 15:
             return True
     return False
-
-
-# Real tables (16,000 hands, ~9,000 field bets): heads-up fold-to-bet rises with size,
-# e.g. flop 40% at 1/2 pot, 48% at 3/4, 56% at pot; turn 41/48/61; river 54/62/72.
-# A logistic shift of 1.4 per pot around the field's typical bet (0.68 pot) fits all streets.
-FOLD_BETA = 1.4
-FOLD_S0 = 0.68
-
-
-def _fold_at(fr, frac):
-    """Fold chance against a bet of `frac` pot, given a size-blind fold rate `fr`."""
-    fr = min(0.97, max(0.03, fr))
-    z = math.log(fr / (1.0 - fr)) + FOLD_BETA * (frac - FOLD_S0)
-    return 1.0 / (1.0 + math.exp(-z))
 
 
 def _made(hole, board):
@@ -722,21 +707,21 @@ class Agent:
             limpers = set(h["seat"] for h in hist)
             limpers.discard(me)
             nl = len(limpers)
-            # v22: maximum-variance push (top 2 only qualify, ~9 rounds left).
+            # v19 (high-variance push, only top 2 qualify): much wider opens.
             if d == 0:
-                base = 0.75
+                base = 0.55
             elif d == 1:
-                base = 0.60
+                base = 0.45
             elif d == 2:
                 base = 0.10
             elif d == n - 1:
-                base = 0.55
+                base = 0.38
             elif d == n - 2 and n >= 6:
-                base = 0.40
+                base = 0.27
             elif d == 3:
-                base = 0.28 if n >= 7 else 0.32
+                base = 0.18 if n >= 7 else 0.21
             else:
-                base = 0.32
+                base = 0.21
             if nl == 0 and d in (0, 1, n - 1):
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
@@ -777,8 +762,7 @@ class Agent:
         ip = idx_me > idx_agg
         nb = sum(1 for s in range(n) if s != me and not state["folded"][s] and state["bets"][s] < cur)
         # v19/v20: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
-        # v21: big-blind/out-of-position calls lost ~2.8bb vs folding in rounds 18-21 -> back to v15 OOP level.
-        real = (1.0 if ip else 0.80) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
+        real = (0.92 if ip else 0.72) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
 
         if not i_raised:
             if len(raises) == 1:
@@ -791,14 +775,13 @@ class Agent:
                     v3f = o.v3fold()
                     # v17: Sunday Table A, Astra folds 80% to 3-bets (n=269), test 74%. Against
                     # openers measured at >= 70% over >= 15 spots, 3-bet the top 45% every time.
-                    if extra == 0 and o.v3_opp >= 6 and v3f >= 0.50 and top < 0.60:
+                    if extra == 0 and o.v3_opp >= 15 and v3f >= 0.70 and top < 0.45:
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
                         if ev > bb:
                             return self._raise(state, target)
                     # v18: second tier. Sunday 3-bets from the blinds vs Attention made +2.8 to +5.6bb each.
-                    # v21: tier-2 3-bets only in position (blind 3-bets went negative in rounds 18-21).
-                    if extra == 0 and d not in (1, 2) and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
+                    if extra == 0 and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.6) * (0.9 ** nb)
                         if ev > bb:
@@ -875,15 +858,10 @@ class Agent:
             ev_check = eq * pot * real
             best, best_size = ev_check, 0
             # Callers are stronger than the field when many hands fold.
+            eq_c = max(0.0, eq - 0.12 * avg_fr) if eq < 0.7 else eq
             for frac in (0.5, 0.75, 1.0):
                 b = pot * frac
-                fs = [_fold_at(f, frac) for f in frs]
-                paf = 1.0
-                for f in fs:
-                    paf *= f
-                cl = max(1.0, sum(1.0 - f for f in fs))
-                eq_c = max(0.0, eq - 0.12 * sum(fs) / nopp) if eq < 0.7 else eq
-                ev = paf * pot + (1.0 - paf) * (eq_c * (pot + b * (1.0 + cl)) - b)
+                ev = p_all_fold * pot + (1.0 - p_all_fold) * (eq_c * (pot + b * (1.0 + callers)) - b)
                 if ev > best + 0.02 * pot:
                     best, best_size = ev, b
             if best_size:

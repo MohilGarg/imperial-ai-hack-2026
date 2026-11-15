@@ -50,7 +50,8 @@ The stricter version did not do better on real tables. The field folds too often
 | v17, v18 | r17-19 | -12,145 | Re-raise openers who fold to re-raises often (one bot folded 80% of the time over 269 spots) |
 | v20 | r20-22 | +6,538 | v18 plus wider late-position opens and in-position defends |
 | v21 | r23-27 | -5,683 | v20 with tighter big-blind defence and blind re-raises cut |
-| v22 | r28 onwards | | Maximum-variance push once qualifying was out of reach: very wide ranges and pot-sized betting |
+| v22 | r28-32 | -42,993 | Maximum-variance push once qualifying was out of reach: very wide ranges and pot-sized betting. It put stacks in with weak hands, the same flaw as v13 |
+| v20 (again) | r33 onwards | | Rolled back to our best Sunday version before uploads closed |
 
 Lessons from Sunday's 30,000 hands:
 - **Luck was not the problem.** For our all-in pots, the equity when the money went in predicted -44,946 and we got -42,265.
@@ -63,7 +64,7 @@ Lessons from Sunday's 30,000 hands:
 
 | Path | What it is |
 |---|---|
-| `bot.py` | The live bot at upload close (v22) |
+| `bot.py` | The live bot at upload close (v20) |
 | `research/bot_template.py`, `research/build.py` | Bot source and the script that embeds the two tables |
 | `research/preflop_table.py`, `research/gen_eqr.py` | Offline Monte Carlo for the equity tables |
 | `research/arena.py`, `research/paired.py` | Paired-seed test harness and A/B comparison |

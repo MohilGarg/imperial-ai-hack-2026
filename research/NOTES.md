@@ -193,3 +193,7 @@ v22 = v21 + opens BTN .75 SB .60 CO .55 HJ .40 EP .28/.32, defend real 1.0 IP / 
 - 11:23 r029 v22 -7902 (-39.5) clean. Played 38%. 3bets 39/23 folds -130bb. Stacks +10/-12; at least 4 lost with ace-high or worse (J8 vs AK, Q8 vs AK, AQ high vs TT, K4 pair vs JJ). v22 2 rounds -6446. Us -31267 (5th); 4th test -12359 (gap 18908); 2nd Attention +98413 (gap ~130k).
 - 11:28 r030 v22 -15136 (-75.7) clean. Stacks +3/-8. v22 3 rounds -21582. Us -46403 (5th); 6th Kojack -51922 (gap 5519 behind us); 4th test -13164. Strongly recommending rollback to v20 before 11:45.
 - 11:33 r031 v22 +799 (+4.0) miss=1. Stacks +5/-2. Us -45604 (5th); 6th Kojack -53029 (7425 behind); 4th test -16056. Still recommending v20 before 11:45; awaiting Mohil.
+- 11:37 repo main updated: bot.py = v22 (sha cfbbac01), research/bot_template.py = tpl_v22, README with Sunday table and lessons, NOTES = STATE.md. Commit 9360f69 pushed 11:36. If live bot changes before 11:45, re-copy and recommit.
+- 11:38 r032 v22 -22210 (-111.1) clean. Stacks +2/-11. v22 5 rounds -42,993. Us -67814, now 6th; Kojack 5th -56813 (11001 ahead). Urging v20 before 11:45.
+
+## 11:40:07 Sun: v20 RE-UPLOADED AND LIVE (Mohil). SHA 3e984b61, loaded fine. This is the final bot (uploads close 11:45). v22 r28-32 total -42,993.
