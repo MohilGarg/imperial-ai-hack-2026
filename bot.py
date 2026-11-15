@@ -762,7 +762,8 @@ class Agent:
         ip = idx_me > idx_agg
         nb = sum(1 for s in range(n) if s != me and not state["folded"][s] and state["bets"][s] < cur)
         # v19/v20: defend more in position / big blind (Sunday: BTN/CO/BB flat calls were profitable).
-        real = (0.92 if ip else 0.72) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
+        # v21: big-blind/out-of-position calls lost ~2.8bb vs folding in rounds 18-21 -> back to v15 OOP level.
+        real = (0.92 if ip else 0.68) + (0.07 if (pair or suited) else 0.0) - 0.04 * min(nb, 2)
 
         if not i_raised:
             if len(raises) == 1:
@@ -781,7 +782,8 @@ class Agent:
                         if ev > bb:
                             return self._raise(state, target)
                     # v18: second tier. Sunday 3-bets from the blinds vs Attention made +2.8 to +5.6bb each.
-                    if extra == 0 and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
+                    # v21: tier-2 3-bets only in position (blind 3-bets went negative in rounds 18-21).
+                    if extra == 0 and d not in (1, 2) and o.v3_opp >= 8 and v3f >= 0.58 and top < 0.33:
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.6) * (0.9 ** nb)
                         if ev > bb:
