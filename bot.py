@@ -707,20 +707,21 @@ class Agent:
             limpers = set(h["seat"] for h in hist)
             limpers.discard(me)
             nl = len(limpers)
+            # v16: wider opens (table leaders play ~29% of hands, we played 20%).
             if d == 0:
-                base = 0.40
+                base = 0.50
             elif d == 1:
-                base = 0.36
+                base = 0.42
             elif d == 2:
                 base = 0.10
             elif d == n - 1:
-                base = 0.27
+                base = 0.35
             elif d == n - 2 and n >= 6:
-                base = 0.20
+                base = 0.25
             elif d == 3:
-                base = 0.13 if n >= 7 else 0.16
+                base = 0.16 if n >= 7 else 0.19
             else:
-                base = 0.16
+                base = 0.19
             if nl == 0 and d in (0, 1, n - 1):
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
@@ -854,6 +855,9 @@ class Agent:
         lv = max(v[1] for v in ranges.values())
         raise_thr = 0.74 if nopp == 1 else max(0.5, 1.6 / (nopp + 1) + 0.1)
         if eq >= raise_thr and can_raise:
+            # v16: never raise the turn or river with one pair or less (half our lost stacks).
+            if street in ("turn", "river") and made <= 2:
+                return {"action": "call"}
             cur = max(state["bets"])
             target = cur * 3 + (pot - sum(state["bets"]))
             # Only put a big part of the stack in as a raise with a very strong hand.
