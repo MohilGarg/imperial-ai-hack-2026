@@ -707,21 +707,20 @@ class Agent:
             limpers = set(h["seat"] for h in hist)
             limpers.discard(me)
             nl = len(limpers)
-            # v16: wider opens (table leaders play ~29% of hands, we played 20%).
             if d == 0:
-                base = 0.50
+                base = 0.40
             elif d == 1:
-                base = 0.42
+                base = 0.36
             elif d == 2:
                 base = 0.10
             elif d == n - 1:
-                base = 0.35
+                base = 0.27
             elif d == n - 2 and n >= 6:
-                base = 0.25
+                base = 0.20
             elif d == 3:
-                base = 0.16 if n >= 7 else 0.19
+                base = 0.13 if n >= 7 else 0.16
             else:
-                base = 0.19
+                base = 0.16
             if nl == 0 and d in (0, 1, n - 1):
                 blinds = [self.opps.get(x) or _Opp() for x in ((btn + 1) % n, (btn + 2) % n) if x != me]
                 if all(o.vo_opp >= 12 and o.fold_open() >= 0.82 for o in blinds):
@@ -772,6 +771,13 @@ class Agent:
                     if eqr(name, f_cont) - 0.05 * extra >= 0.53:
                         return self._raise(state, target)
                     v3f = o.v3fold()
+                    # v17: Sunday Table A, Astra folds 80% to 3-bets (n=269), test 74%. Against
+                    # openers measured at >= 70% over >= 15 spots, 3-bet the top 45% every time.
+                    if extra == 0 and o.v3_opp >= 15 and v3f >= 0.70 and top < 0.45:
+                        add = min(target, state["max_raise_to"]) - mine
+                        ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
+                        if ev > bb:
+                            return self._raise(state, target)
                     if extra == 0 and o.v3_opp >= 5 and top < 0.28 and (suited or pair or name[0] == "A"):
                         add = min(target, state["max_raise_to"]) - mine
                         ev = (v3f * pot - (1.0 - v3f) * add * 0.75) * (0.9 ** nb)
@@ -855,9 +861,6 @@ class Agent:
         lv = max(v[1] for v in ranges.values())
         raise_thr = 0.74 if nopp == 1 else max(0.5, 1.6 / (nopp + 1) + 0.1)
         if eq >= raise_thr and can_raise:
-            # v16: never raise the turn or river with one pair or less (half our lost stacks).
-            if street in ("turn", "river") and made <= 2:
-                return {"action": "call"}
             cur = max(state["bets"])
             target = cur * 3 + (pot - sum(state["bets"]))
             # Only put a big part of the stack in as a raise with a very strong hand.
